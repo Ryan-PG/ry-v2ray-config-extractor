@@ -9,6 +9,9 @@ Enjoy it...
 > ### 🟢 Privacy Guaranteed
 > This application is 100% client-side and **does not** save any user input or data to a database.
 
+## Use it here
+[ry-v2ray-config-extractor](https://ryan-pg.github.io/ry-v2ray-config-extractor)
+
 ## 🚀 Features
 <div align="center">
   <table>
