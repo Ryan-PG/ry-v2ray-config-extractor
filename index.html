@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ry - V2ray Config Parser</title>
+    
+    <!-- 1. Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 2. Configure Import Map for React & Icons -->
+    <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.2.0",
+        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+        "lucide-react": "https://esm.sh/lucide-react@0.292.0"
+      }
+    }
+    </script>
+
+    <!-- 3. Load Babel for JSX support in browser -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-900 text-slate-100">
+    <div id="root"></div>
+
+    <!-- 4. Your Application Code -->
+    <script type="text/babel" data-type="module">
+        import React, { useState } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { Upload, Copy, Check, FileJson, Trash2, Shield, Zap, Globe } from 'lucide-react';
+
+        // --- Helper Functions ---
+
+        const getStreamSettings = (outbound) => {
+            const stream = outbound.streamSettings || {};
+            const network = stream.network || 'tcp';
+            const security = stream.security || 'none';
+            const wsSettings = stream.wsSettings || {};
+            const tlsSettings = stream.tlsSettings || {};
+            const tcpSettings = stream.tcpSettings || {};
+            const grpcSettings = stream.grpcSettings || {};
+            return { network, security, wsSettings, tlsSettings, tcpSettings, grpcSettings };
+        };
+
+        const generateVlessLink = (outbound, remarks) => {
+            try {
+                const settings = outbound.settings?.vnext?.[0];
+                if (!settings) return null;
+                const user = settings.users?.[0];
+                const address = settings.address;
+                const port = settings.port;
+                const uuid = user?.id;
+                if (!address || !port || !uuid) return null;
+
+                const { network, security, wsSettings, tlsSettings, grpcSettings } = getStreamSettings(outbound);
+                const params = new URLSearchParams();
+                params.set('type', network);
+                params.set('security', security);
+
+                if (network === 'ws') {
+                    if (wsSettings.path) params.set('path', wsSettings.path);
+                    if (wsSettings.headers?.Host || wsSettings.host) params.set('host', wsSettings.headers?.Host || wsSettings.host);
+                }
+                if (network === 'grpc') {
+                    if (grpcSettings.serviceName) params.set('serviceName', grpcSettings.serviceName);
+                    if (grpcSettings.multiMode) params.set('mode', 'multi');
+                }
+                if (security === 'tls') {
+                    if (tlsSettings.serverName) params.set('sni', tlsSettings.serverName);
+                    if (tlsSettings.fingerprint) params.set('fp', tlsSettings.fingerprint);
+                    if (tlsSettings.alpn?.length) params.set('alpn', tlsSettings.alpn.join(','));
+                    if (tlsSettings.flow) params.set('flow', tlsSettings.flow);
+                }
+                return `vless://${uuid}@${address}:${port}?${params.toString()}#${encodeURIComponent(remarks)}`;
+            } catch (e) { return null; }
+        };
+
+        const generateTrojanLink = (outbound, remarks) => {
+            try {
+                const settings = outbound.settings?.servers?.[0];
+                if (!settings) return null;
+                const address = settings.address;
+                const port = settings.port;
+                const password = settings.password;
+                if (!address || !port || !password) return null;
+
+                const { network, security, wsSettings, tlsSettings, grpcSettings } = getStreamSettings(outbound);
+                const params = new URLSearchParams();
+                params.set('type', network);
+                params.set('security', security);
+
+                if (network === 'ws') {
+                    if (wsSettings.path) params.set('path', wsSettings.path);
+                    if (wsSettings.headers?.Host || wsSettings.host) params.set('host', wsSettings.headers?.Host || wsSettings.host);
+                }
+                if (network === 'grpc' && grpcSettings.serviceName) {
+                    params.set('serviceName', grpcSettings.serviceName);
+                }
+                if (security === 'tls') {
+                    if (tlsSettings.serverName) params.set('sni', tlsSettings.serverName);
+                    if (tlsSettings.fingerprint) params.set('fp', tlsSettings.fingerprint);
+                    if (tlsSettings.alpn?.length) params.set('alpn', tlsSettings.alpn.join(','));
+                }
+                return `trojan://${password}@${address}:${port}?${params.toString()}#${encodeURIComponent(remarks)}`;
+            } catch (e) { return null; }
+        };
+
+        const generateVmessLink = (outbound, remarks) => {
+            try {
+                const vnext = outbound.settings?.vnext?.[0];
+                if (!vnext) return null;
+                const { network, security, wsSettings, tlsSettings } = getStreamSettings(outbound);
+                const config = {
+                    v: "2", ps: remarks, add: vnext.address, port: vnext.port,
+                    id: vnext.users[0].id, aid: vnext.users[0].alterId || 0,
+                    scy: vnext.users[0].security || "auto", net: network, type: "none",
+                    host: "", path: "", tls: security === "tls" ? "tls" : "", sni: "", alpn: ""
+                };
+                if (network === 'ws') {
+                    config.path = wsSettings.path || "";
+                    config.host = wsSettings.headers?.Host || wsSettings.host || "";
+                }
+                if (security === 'tls') {
+                    config.sni = tlsSettings.serverName || "";
+                    config.alpn = tlsSettings.alpn ? tlsSettings.alpn.join(',') : "";
+                }
+                return `vmess://${btoa(JSON.stringify(config))}`;
+            } catch (e) { return null; }
+        };
+
+        // --- Main Component ---
+        function App() {
+            const [configs, setConfigs] = useState([]);
+            const [fileName, setFileName] = useState('');
+            const [error, setError] = useState('');
+            const [copiedIndex, setCopiedIndex] = useState(null);
+            const [copiedAll, setCopiedAll] = useState(false);
+
+            const handleFileUpload = (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+                setFileName(file.name);
+                setError('');
+                setConfigs([]);
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const json = JSON.parse(e.target.result);
+                        processJson(json);
+                    } catch (err) { setError('Invalid JSON file.'); }
+                };
+                reader.readAsText(file);
+            };
+
+            const processJson = (data) => {
+                const extractedConfigs = [];
+                const dataArray = Array.isArray(data) ? data : [data];
+                dataArray.forEach((item, index) => {
+                    const outbounds = item.outbounds || [];
+                    const baseRemarks = item.remarks || `Config ${index + 1}`;
+                    outbounds.forEach((outbound) => {
+                        if (!['vless', 'vmess', 'trojan', 'shadowsocks'].includes(outbound.protocol)) return;
+                        let link = null;
+                        let finalRemarks = baseRemarks;
+                        if (outbound.tag && outbound.tag !== 'proxy') finalRemarks = `${baseRemarks} - ${outbound.tag}`;
+
+                        if (outbound.protocol === 'vless') link = generateVlessLink(outbound, finalRemarks);
+                        else if (outbound.protocol === 'trojan') link = generateTrojanLink(outbound, finalRemarks);
+                        else if (outbound.protocol === 'vmess') link = generateVmessLink(outbound, finalRemarks);
+
+                        if (link) {
+                            extractedConfigs.push({
+                                id: crypto.randomUUID(),
+                                remarks: finalRemarks,
+                                protocol: outbound.protocol.toUpperCase(),
+                                link: link,
+                                originalTag: outbound.tag
+                            });
+                        }
+                    });
+                });
+                if (extractedConfigs.length === 0) setError("No configurations found.");
+                else setConfigs(extractedConfigs);
+            };
+
+            const copyToClipboard = (text, index) => {
+                try {
+                    const textArea = document.createElement("textarea");
+                    textArea.value = text;
+                    textArea.style.position = "fixed";
+                    textArea.style.left = "-9999px";
+                    document.body.appendChild(textArea);
+                    textArea.focus();
+                    textArea.select();
+                    const successful = document.execCommand('copy');
+                    document.body.removeChild(textArea);
+                    if (successful) {
+                        if (index === 'ALL') {
+                            setCopiedAll(true);
+                            setTimeout(() => setCopiedAll(false), 2000);
+                        } else {
+                            setCopiedIndex(index);
+                            setTimeout(() => setCopiedIndex(null), 2000);
+                        }
+                    }
+                } catch (err) {}
+            };
+
+            return (
+                <div className="min-h-screen bg-slate-900 text-slate-100 font-sans selection:bg-emerald-500 selection:text-white">
+                    <div className="max-w-4xl mx-auto p-6">
+                        <div className="mb-10 text-center space-y-4">
+                            <div className="inline-flex items-center justify-center p-3 bg-slate-800 rounded-2xl ring-1 ring-white/10 shadow-xl mb-4">
+                                <Shield className="w-8 h-8 text-emerald-400" />
+                            </div>
+                            <h1 className="text-4xl font-bold tracking-tight bg-gradient-to-rto-cyan-400 bg-clip-text text-emerald-400">
+                                Ry - V2ray Config Extractor
+                            </h1>
+                            <p className="text-slate-400 text-lg">Convert JSON backups into importable share links</p>
+                        </div>
+
+                        {configs.length === 0 && (
+                            <div className="bg-slate-800/50 border-2 border-dashed border-slate-700 rounded-3xl p-12 text-center transition-all hover:border-emerald-500/50 hover:bg-slate-800 group">
+                                <input type="file" id="fileInput" accept=".json,.txt" className="hidden" onChange={handleFileUpload} />
+                                <label htmlFor="fileInput" className="cursor-pointer block space-y-4">
+                                    <div className="mx-auto w-20 h-20 bg-slate-800 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform ring-1 ring-white/10">
+                                        <Upload className="w-8 h-8 text-emerald-400" />
+                                    </div>
+                                    <div>
+                                        <p className="text-xl font-medium text-white">Click to upload config.json</p>
+                                        <p className="text-slate-500 mt-2">Supports V2Ray/Xray JSON dumps</p>
+                                    </div>
+                                </label>
+                                {error && <div className="mt-6 p-4 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-sm">{error}</div>}
+                            </div>
+                        )}
+
+                        {configs.length > 0 && (
+                            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                                <div className="flex flex-col sm:flex-row gap-4 justify-between items-center bg-slate-800 p-4 rounded-2xl ring-1 ring-white/10 shadow-lg">
+                                    <div className="flex items-center gap-3">
+                                        <div className="p-2 bg-emerald-500/10 rounded-lg"><FileJson className="w-5 h-5 text-emerald-400" /></div>
+                                        <div>
+                                            <h2 className="font-semibold text-white">{fileName}</h2>
+                                            <p className="text-xs text-emerald-400 font-medium">{configs.length} Configs Found</p>
+                                        </div>
+                                    </div>
+                                    <div className="flex gap-2 w-full sm:w-auto">
+                                        <button onClick={() => { setConfigs([]); setFileName(''); setError(''); }} className="px-4 py-2 text-sm font-medium text-slate-400 hover:text-white hover:bg-white/5 rounded-xl transition-colors">
+                                            <div className="flex items-center gap-2"><Trash2 className="w-4 h-4" />Reset</div>
+                                        </button>
+                                        <button onClick={() => copyToClipboard(configs.map(c => c.link).join('\n'), 'ALL')} className="flex-1 sm:flex-none px-6 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-900 font-bold rounded-xl transition-all active:scale-95 shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2">
+                                            {copiedAll ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                                            {copiedAll ? 'Copied!' : 'Copy All Configs'}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="grid gap-3">
+                                    {configs.map((config, idx) => (
+                                        <div key={config.id} className="group bg-slate-800 hover:bg-slate-750 p-4 rounded-2xl ring-1 ring-white/5 transition-all hover:ring-emerald-500/30 flex items-center gap-4">
+                                            <div className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0 font-bold text-sm ring-1 ring-inset ${config.protocol === 'VLESS' ? 'bg-blue-500/10 text-blue-400 ring-blue-500/20' : ''} ${config.protocol === 'TROJAN' ? 'bg-orange-500/10 text-orange-400 ring-orange-500/20' : ''} ${config.protocol === 'VMESS' ? 'bg-purple-500/10 text-purple-400 ring-purple-500/20' : ''}`}>
+                                                {config.protocol.substring(0, 3)}
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <h3 className="font-medium text-white truncate" title={config.remarks}>{config.remarks}</h3>
+                                                <div className="flex items-center gap-3 mt-1 text-xs text-slate-500">
+                                                    <span className="flex items-center gap-1"><Zap className="w-3 h-3" />{config.originalTag || 'Proxy'}</span>
+                                                    <span className="w-1 h-1 bg-slate-600 rounded-full"></span>
+                                                    <span className="font-mono text-emerald-500/80 truncate max-w-[200px]">{config.link.substring(0, 35)}...</span>
+                                                </div>
+                                            </div>
+                                            <button onClick={() => copyToClipboard(config.link, idx)} className={`p-2.5 rounded-xl transition-all ring-1 ring-inset ${copiedIndex === idx ? 'bg-emerald-500 text-slate-900 ring-emerald-500 scale-110' : 'bg-slate-900 text-slate-400 hover:text-white ring-white/10 hover:bg-slate-700'}`} title="Copy Link">
+                                                {copiedIndex === idx ? <Check className="w-5 h-5" /> : <Copy className="w-5 h-5" />}
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
